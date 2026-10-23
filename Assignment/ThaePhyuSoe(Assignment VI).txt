@@ -1,0 +1,237 @@
+Assignment 6
+Name Thae Phyu Soe
+
+import pymysql
+from datetime import datetime
+
+def db_connection():
+    try:
+        conn = pymysql.connect(
+            host="127.0.0.1",
+            user="root",
+            password="root",
+            database="demo",
+            port=3306,
+            connect_timeout=5,
+            cursorclass=pymysql.cursors.DictCursor
+        )
+        return conn
+    except Exception as e:
+        print("Database Connection Failed:", e)
+        return None
+
+class LibrarySystem:
+    def __init__(self):
+        self.conn = db_connection()
+        if self.conn:
+            self.create_tables()
+
+    def create_tables(self):
+        with self.conn.cursor() as cursor:
+            # Members table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS members (
+                    member_id VARCHAR(50) PRIMARY KEY,
+                    name VARCHAR(100) NOT NULL
+                )
+            """)
+            # Books table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS books (
+                    book_id VARCHAR(50) PRIMARY KEY,
+                    title VARCHAR(200) NOT NULL,
+                    author VARCHAR(100) NOT NULL,
+                    status VARCHAR(20) DEFAULT 'Available',
+                    issued_date DATE NULL,
+                    borrow_count INT DEFAULT 0,
+                    member_id VARCHAR(50) NULL,
+                    FOREIGN KEY (member_id) REFERENCES members(member_id) ON DELETE SET NULL
+                )
+            """)
+            self.conn.commit()
+
+    def add_book(self):
+        print("\n--- Add New Book ---")
+        book_id = input("Enter Book ID: ").strip()
+        title = input("Enter Book Title: ").strip()
+        author = input("Enter Author Name: ").strip()
+
+        if not book_id or not title:
+            print("Error: Book ID and Title cannot be empty.")
+            return
+
+        try:
+            with self.conn.cursor() as cursor:
+                sql = "INSERT INTO books (book_id, title, author, status, borrow_count) VALUES (%s, %s, %s, 'Available', 0)"
+                cursor.execute(sql, (book_id, title, author))
+                self.conn.commit()
+                print(f"\n[Success] Book '{title}' added successfully!")
+        except Exception as e:
+            print(f"\n[Error] Could not add book: {e}")
+
+    def register_member(self):
+        print("\n--- Register New Member ---")
+        member_id = input("Enter Member ID: ").strip()
+        name = input("Enter Member Name: ").strip()
+
+        if not member_id or not name:
+            print("Error: Member ID and Name cannot be empty.")
+            return
+
+        try:
+            with self.conn.cursor() as cursor:
+                sql = "INSERT INTO members (member_id, name) VALUES (%s, %s)"
+                cursor.execute(sql, (member_id, name))
+                self.conn.commit()
+                print(f"\n[Success] Member '{name}' registered successfully!")
+        except Exception as e:
+            print(f"\n[Error] Could not register member: {e}")
+
+    def display_books(self):
+        with self.conn.cursor() as cursor:
+            cursor.execute("SELECT * FROM books")
+            books = cursor.fetchall()
+            
+            print("\n--- Library Book Catalog ---")
+            if not books:
+                print("No books found in the database.")
+                return
+            for book in books:
+                holder = f" | Issued To Member ID: {book['member_id']}" if book['status'] == 'Issued' else ""
+                print(f"ID: {book['book_id']} | Title: {book['title']} | Author: {book['author']} | Status: {book['status']}{holder}")
+
+    def issue_book(self):
+        print("\n--- Issue a Book ---")
+        member_id = input("Enter Member ID: ").strip()
+        book_id = input("Enter Book ID to issue: ").strip()
+
+        with self.conn.cursor() as cursor:
+            # Check if member exists
+            cursor.execute("SELECT * FROM members WHERE member_id = %s", (member_id,))
+            if not cursor.fetchone():
+                print("\n[Error] Member ID not found. Please register first.")
+                return
+
+            # Check book status
+            cursor.execute("SELECT * FROM books WHERE book_id = %s", (book_id,))
+            book = cursor.fetchone()
+            if not book:
+                print("\n[Error] Book ID not found.")
+                return
+
+            if book['status'] == 'Issued':
+                print(f"\n[Sorry] '{book['title']}' is already issued.")
+                return
+
+            issue_date = datetime.now().date()
+
+            # Update book record
+            update_sql = """
+                UPDATE books 
+                SET status = 'Issued', issued_date = %s, borrow_count = borrow_count + 1, member_id = %s 
+                WHERE book_id = %s
+            """
+            cursor.execute(update_sql, (issue_date, member_id, book_id))
+            self.conn.commit()
+            print(f"\n[Success] Book '{book['title']}' issued to member {member_id}.")
+
+    def return_book(self):
+        print("\n--- Return a Book ---")
+        member_id = input("Enter Member ID: ").strip()
+        book_id = input("Enter Book ID to return: ").strip()
+
+        with self.conn.cursor() as cursor:
+            cursor.execute("SELECT * FROM books WHERE book_id = %s", (book_id,))
+            book = cursor.fetchone()
+
+            if not book:
+                print("\n[Error] Book ID not found.")
+                return
+
+            if book['status'] != 'Issued' or book['member_id'] != member_id:
+                print("\n[Error] This book is not currently issued to this member.")
+                return
+
+            return_date = datetime.now().date()
+            issued_date = book['issued_date']
+            
+            # Calculate days borrowed
+            days_borrowed = (return_date - issued_date).days
+            if days_borrowed < 0:
+                days_borrowed = 0
+
+            # Fine Calculation: Rs. 10 × (Days borrowed – 7)
+            fine = 0
+            if days_borrowed > 7:
+                fine = 10 * (days_borrowed - 7)
+
+            # Update book back to available
+            reset_sql = "UPDATE books SET status = 'Available', issued_date = NULL, member_id = NULL WHERE book_id = %s"
+            cursor.execute(reset_sql, (book_id,))
+            self.conn.commit()
+
+            print(f"\n--- Return Summary ---")
+            print(f"Book: {book['title']}")
+            print(f"Total Days Borrowed: {days_borrowed} days")
+            if fine > 0:
+                print(f"Fine Amount Due: Rs. {fine}")
+            else:
+                print("Returned on time. No fine incurred!")
+
+    def display_most_borrowed(self):
+        with self.conn.cursor() as cursor:
+            cursor.execute("SELECT * FROM books ORDER BY borrow_count DESC LIMIT 1")
+            top_book = cursor.fetchone()
+
+            if not top_book or top_book['borrow_count'] == 0:
+                print("\nNo books have been borrowed yet.")
+            else:
+                print(f"\n--- Library Analytics ---")
+                print(f"Most Borrowed Book: '{top_book['title']}' by {top_book['author']}")
+                print(f"Total Times Borrowed: {top_book['borrow_count']} time(s)")
+
+    def close(self):
+        if self.conn:
+            self.conn.close()
+            print("\nDatabase connection closed.")
+
+
+# --- Main Application Loop (Interactive Menu) ---
+if __name__ == "__main__":
+    lib = LibrarySystem()
+
+    if lib.conn:
+        while True:
+            print("\n==============================")
+            print("   LIBRARY MANAGEMENT SYSTEM  ")
+            print("==============================")
+            print("1. Add Book")
+            print("2. Register Member")
+            print("3. View All Books")
+            print("4. Issue Book")
+            print("5. Return Book")
+            print("6. Show Most Borrowed Book")
+            print("7. Exit")
+            
+            choice = input("Enter your choice (1-7): ").strip()
+
+            if choice == "1":
+                lib.add_book()
+            elif choice == "2":
+                lib.register_member()
+            elif choice == "3":
+                lib.display_books()
+            elif choice == "4":
+                lib.issue_book()
+            elif choice == "5":
+                lib.return_book()
+            elif choice == "6":
+                lib.display_most_borrowed()
+            elif choice == "7":
+                lib.close()
+                print("Exiting program. Goodbye!")
+                break
+            else:
+                print("\n[Invalid Choice] Please enter a number between 1 and 7.")
+    else:
+        print("Cannot start application due to database connection failure.")
